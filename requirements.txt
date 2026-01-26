@@ -1,0 +1,17 @@
+# Wii Mouse Driver - Dependencies
+
+# Core - HID communication with Wiimote
+hidapi>=0.14.0
+
+# Mouse/Keyboard control
+pyautogui>=0.9.54
+pynput>=1.7.6
+
+# GUI (tkinter usually comes with Python)
+# No additional packages needed for tkinter
+
+# Optional - Development/Testing
+pytest>=7.4.0
+
+# Windows-specific (automatically installed on Windows only)
+pywin32>=306; platform_system=="Windows"
