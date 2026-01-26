@@ -4,7 +4,7 @@
 
 ---
 
-# STILL NOT WORKING!!! Run the test_wiimote.oy file if you want to test the connection with the wiimote controller. The Entire system is under working, this project starts on 2026-01-26.
+# STILL NOT WORKING!!! Run the test_wiimote.py file if you want to test the connection with the wiimote controller. The Entire system is under working, this project was started on 2026-01-26.
 
 ## English
 
