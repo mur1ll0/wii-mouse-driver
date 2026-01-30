@@ -3,6 +3,7 @@
 import sys
 import logging
 import time
+import os
 from pathlib import Path
 
 # Add src to path
@@ -10,44 +11,51 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from wiimote.connection import WiimoteConnection
 
+try:
+    import pytest
+except Exception:
+    pytest = None
+from logging_utils import configure_logging
+
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+configure_logging()
 
 logger = logging.getLogger(__name__)
 
 
 def test_connection_improved():
     """Teste melhorado com múltiplas tentativas."""
-    print("\n" + "="*70)
-    print("🎮 TESTE DE CONEXÃO - WII MOUSE DRIVER")
-    print("="*70)
+    is_pytest = "PYTEST_CURRENT_TEST" in os.environ
+    if is_pytest and os.environ.get("WIIMOTE_INTERACTIVE") != "1":
+        if pytest is not None:
+            pytest.skip("Teste interativo; defina WIIMOTE_INTERACTIVE=1 para executar.")
+    logger.info("\n" + "="*70)
+    logger.info("🎮 TESTE DE CONEXÃO - WII MOUSE DRIVER")
+    logger.info("="*70)
     
-    print("\n⚠️  INSTRUÇÃO:")
-    print("   1. Pressione os botões 1+2 no Wiimote SIMULTANEAMENTE")
-    print("   2. Aguarde os LEDs começarem a PISCAR")
-    print("   3. Aperte ENTER aqui para continuar o teste")
+    logger.info("\n⚠️  INSTRUÇÃO:")
+    logger.info("   1. Pressione os botões 1+2 no Wiimote SIMULTANEAMENTE")
+    logger.info("   2. Aguarde os LEDs começarem a PISCAR")
+    logger.info("   3. Aperte ENTER aqui para continuar o teste")
     
     input("\n   >>> Pressione ENTER quando os LEDs estiverem piscando...")
     
-    print("\n✅ Iniciando teste...")
+    logger.info("\n✅ Iniciando teste...")
     
     try:
         # Create connection
         wiimote = WiimoteConnection()
         
         # Find Wiimote
-        print("🔍 Procurando Wiimote...")
+        logger.info("🔍 Procurando Wiimote...")
         device_info = wiimote.find_wiimote(timeout=5)
         
         if device_info is None:
-            print("❌ Wiimote não encontrado!")
+            logger.error("❌ Wiimote não encontrado!")
             return False
         
         # Connect to device
-        print("🔌 Abrindo conexão HID...")
+        logger.info("🔌 Abrindo conexão HID...")
         
         # Open device manually
         import hid
@@ -57,16 +65,16 @@ def test_connection_improved():
         
         device = hid.device()
         device.open_path(path)
-        print("✅ Conexão HID aberta!")
+        logger.info("✅ Conexão HID aberta!")
         
         # Test 1: Send LED command WITHOUT waiting for response first
-        print("\n📤 Enviando comando de LED 1...")
+        logger.info("\n📤 Enviando comando de LED 1...")
         device.write(bytes([0x11, 0x10]))  # LED 1
         time.sleep(0.2)
         
         # Test 2: Try to read data
-        print("📥 Aguardando resposta do Wiimote...")
-        print("   PRESSIONE E SEGURE um botão por 3 segundos!\n")
+        logger.info("📥 Aguardando resposta do Wiimote...")
+        logger.info("   PRESSIONE E SEGURE um botão por 3 segundos!\n")
         
         data_received = False
         start = time.time()
@@ -75,25 +83,25 @@ def test_connection_improved():
             try:
                 data = device.read(32, 200)
                 if data and len(data) > 0:
-                    print(f"   ✅ Recebido {len(data)} bytes!")
-                    print(f"      {bytes(data).hex()}")
+                    logger.info(f"   ✅ Recebido {len(data)} bytes!")
+                    logger.info(f"      {bytes(data).hex()}")
                     data_received = True
                     break
             except:
                 pass
         
         if not data_received:
-            print("   ⚠️  Nenhum dado recebido")
-            print("\n   Possíveis problemas:")
-            print("   1. Wiimote sem pilhas ou pilhas fracas")
-            print("   2. Não pressionou botão ou pressionou muito rápido")
-            print("   3. Distância muito grande ou interferência")
-            print("   4. Wiimote pode estar em modo de economia de energia")
+            logger.warning("   ⚠️  Nenhum dado recebido")
+            logger.warning("\n   Possíveis problemas:")
+            logger.warning("   1. Wiimote sem pilhas ou pilhas fracas")
+            logger.warning("   2. Não pressionou botão ou pressionou muito rápido")
+            logger.warning("   3. Distância muito grande ou interferência")
+            logger.warning("   4. Wiimote pode estar em modo de economia de energia")
             device.close()
             return False
         
         # Test 3: Control LEDs
-        print("\n💡 Testando controle de LEDs...")
+        logger.info("\n💡 Testando controle de LEDs...")
         
         for led_num in range(1, 5):
             leds = [False, False, False, False]
@@ -106,39 +114,39 @@ def test_connection_improved():
                 0x80 if leds[3] else 0,
             ])
             
-            print(f"   Acendendo LED {led_num}...", end=" ", flush=True)
+            logger.info(f"   Acendendo LED {led_num}...")
             device.write(bytes([0x11, led_byte]))
             time.sleep(0.5)
-            print("✅")
+            logger.info("✅")
         
         # All LEDs on
-        print(f"   Acendendo todos LEDs...", end=" ", flush=True)
+        logger.info("   Acendendo todos LEDs...")
         device.write(bytes([0x11, 0xF0]))
         time.sleep(0.5)
-        print("✅")
+        logger.info("✅")
         
         # Test 4: Rumble
-        print("\n📳 Testando vibração...")
-        print("   Ligando vibração...", end=" ", flush=True)
+        logger.info("\n📳 Testando vibração...")
+        logger.info("   Ligando vibração...")
         device.write(bytes([0x10, 0x01]))
         time.sleep(0.5)
-        print("✅")
+        logger.info("✅")
         
-        print("   Desligando vibração...", end=" ", flush=True)
+        logger.info("   Desligando vibração...")
         device.write(bytes([0x10, 0x00]))
         time.sleep(0.2)
-        print("✅")
+        logger.info("✅")
         
         # IMPORTANT: Enable continuous reporting mode BEFORE data collection
-        print("\n⚙️  Configurando modo de reporte contínuo...")
+        logger.info("\n⚙️  Configurando modo de reporte contínuo...")
         # Command: 0x12 = set report mode, 0x04 = continuous, 0x31 = buttons + accel
         device.write(bytes([0x12, 0x04, 0x31]))
         time.sleep(0.5)
-        print("   ✅ Modo contínuo ativado!")
+        logger.info("   ✅ Modo contínuo ativado!")
         
         # Test 5: Data collection
-        print("\n📊 Coletando dados (10 segundos)...")
-        print("   Mova o controle, pressione botões e use aceleração!\n")
+        logger.info("\n📊 Coletando dados (10 segundos)...")
+        logger.info("   Mova o controle, pressione botões e use aceleração!\n")
         
         packets = 0
         start = time.time()
@@ -193,21 +201,21 @@ def test_connection_improved():
                         if gyro_x or gyro_y or gyro_z:
                             info += f" | Gyro: X={gyro_x:5d} Y={gyro_y:5d} Z={gyro_z:3d}"
                     
-                    print(f"   {info}")
+                    logger.info(f"   {info}")
             except Exception as e:
                 pass
         
         if packets > 0:
-            print(f"\n✅ Recebidos {packets} pacotes em 10 segundos!")
+            logger.info(f"\n✅ Recebidos {packets} pacotes em 10 segundos!")
         else:
-            print(f"\n⚠️  Nenhum pacote recebido durante coleta")
+            logger.warning("\n⚠️  Nenhum pacote recebido durante coleta")
         
         device.close()
-        print("\n✅ TESTE COMPLETO COM SUCESSO!")
+        logger.info("\n✅ TESTE COMPLETO COM SUCESSO!")
         return True
         
     except Exception as e:
-        print(f"\n❌ Erro: {e}")
+        logger.exception(f"\n❌ Erro: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -215,4 +223,4 @@ def test_connection_improved():
 
 if __name__ == "__main__":
     test_connection_improved()
-    print("\n" + "="*70 + "\n")
+    logger.info("\n" + "="*70 + "\n")

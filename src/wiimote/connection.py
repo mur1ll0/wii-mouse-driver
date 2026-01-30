@@ -3,6 +3,9 @@
 import logging
 import time
 import sys
+import threading
+import queue
+from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Tuple
 
 try:
@@ -11,6 +14,13 @@ try:
 except ImportError:
     HID_AVAILABLE = False
     logging.warning("hidapi not available, Wiimote functionality disabled")
+
+
+@dataclass
+class WiimoteHIDEvent:
+    """Represents a raw HID event from the Wiimote."""
+    timestamp: float
+    data: bytes
 
 
 class WiimoteConnection:
@@ -40,6 +50,21 @@ class WiimoteConnection:
         self.device_info = None
         self.connected = False
         self.rumble_state = False  # Track rumble state
+        self.auto_reconnect = True
+        self._read_thread: Optional[threading.Thread] = None
+        self._read_stop = threading.Event()
+        self._read_timeout_ms = 100
+        self._event_queue: "queue.Queue[WiimoteHIDEvent]" = queue.Queue(maxsize=256)
+        self._last_read_error: Optional[Exception] = None
+        self._read_loop_wanted = False
+
+        self._reconnect_thread: Optional[threading.Thread] = None
+        self._reconnect_stop = threading.Event()
+        self._reconnect_lock = threading.Lock()
+        self._reconnect_initial_delay = 0.5
+        self._reconnect_max_delay = 3.0
+        self._reconnect_backoff = 1.6
+        self._reconnect_jitter = 0.1
         
         if not HID_AVAILABLE:
             self.logger.error("hidapi not available - install hidapi: pip install hidapi")
@@ -89,13 +114,23 @@ class WiimoteConnection:
                         self.logger.debug(f"    Usage Page: 0x{dev.get('usage_page', 0):04X}")
                         self.logger.debug(f"    Usage: 0x{dev.get('usage', 0):04X}")
                     
-                    # Try to find the OUTPUT interface
-                    # The Wiimote has multiple HID interfaces, we need interface 0
-                    # or the one with usage_page 0x0001 (Generic Desktop)
+                    # Try to find the primary interface (usage_page 0x0001, usage 0x0005)
+                    # or interface 0
                     for device_info in wiimote_devices:
                         interface_num = device_info.get('interface_number', -1)
                         usage_page = device_info.get('usage_page', 0)
+                        usage = device_info.get('usage', 0)
                         
+                        # Prefer Generic Desktop / Game Pad
+                        if usage_page == 0x0001 and usage == 0x0005:
+                            product_name = device_info.get('product_string', 'Unknown')
+                            product_id = device_info['product_id']
+                            device_type = "Wiimote Plus" if product_id == self.WIIMOTE_PLUS_PRODUCT_ID else "Wiimote"
+                            
+                            self.logger.info(f"✓ Found {device_type}: {product_name}")
+                            self.logger.debug(f"  Using interface {interface_num}")
+                            return device_info
+
                         # Interface 0 or usage_page 0x0001 is usually the main control interface
                         if interface_num == 0 or usage_page == 0x0001:
                             product_name = device_info.get('product_string', 'Unknown')
@@ -172,10 +207,20 @@ class WiimoteConnection:
             if device_info is None:
                 device_info = self.find_wiimote(timeout)
                 if device_info is None:
+                    self.logger.error(
+                        "Wiimote not found. Ensure it is paired and press 1+2 to sync."
+                    )
                     return False
             
             self.device_info = device_info
             path = device_info.get('path')
+
+            if not path:
+                self.logger.error(
+                    "Wiimote device path missing in HID info. Device info: %s",
+                    device_info,
+                )
+                return False
             
             # Ensure path is bytes
             if isinstance(path, str):
@@ -298,6 +343,9 @@ class WiimoteConnection:
             time.sleep(0.1)
         except:
             pass
+
+        self.stop_read_loop()
+        self._stop_reconnect_loop()
         
         self._cleanup()
         self.connected = False
@@ -320,6 +368,7 @@ class WiimoteConnection:
             Raw data bytes or None if no data available
         """
         if not self.connected or not self.device:
+            self._ensure_reconnect()
             return None
         
         try:
@@ -330,12 +379,113 @@ class WiimoteConnection:
             if data:
                 return bytes(data)
             return None
-        
+
         except Exception as e:
             # Ignore timeout errors (expected in non-blocking mode)
             if "timeout" not in str(e).lower():
                 self.logger.debug(f"Error reading data: {e}")
+                self._handle_disconnect(e)
             return None
+
+    def start_read_loop(self, timeout_ms: int = 50, queue_size: Optional[int] = None) -> bool:
+        """
+        Start background read thread that enqueues raw HID events.
+
+        Args:
+            timeout_ms: Read timeout per loop (milliseconds)
+            queue_size: Optional queue size override
+
+        Returns:
+            True if thread started or already running
+        """
+        if not self.connected or not self.device:
+            self.logger.warning("Cannot start read loop: not connected")
+            return False
+
+        if self._read_thread and self._read_thread.is_alive():
+            return True
+
+        if queue_size is not None and queue_size > 0:
+            self._event_queue = queue.Queue(maxsize=queue_size)
+
+        self._read_timeout_ms = max(1, int(timeout_ms))
+        self._read_stop.clear()
+        self._last_read_error = None
+        self._read_loop_wanted = True
+        self._read_thread = threading.Thread(target=self._read_loop, name="WiimoteReadLoop", daemon=True)
+        self._read_thread.start()
+        return True
+
+    def stop_read_loop(self, join_timeout: float = 1.0):
+        """Stop background read thread and wait briefly for it to finish."""
+        self._read_stop.set()
+        if self._read_thread and self._read_thread.is_alive():
+            self._read_thread.join(timeout=join_timeout)
+        self._read_thread = None
+        self._read_loop_wanted = False
+
+    def get_event(self, timeout: float = 0.0) -> Optional[WiimoteHIDEvent]:
+        """
+        Get the next queued HID event.
+
+        Args:
+            timeout: Seconds to wait for an event (0 for non-blocking)
+
+        Returns:
+            WiimoteHIDEvent if available, else None
+        """
+        try:
+            if timeout and timeout > 0:
+                return self._event_queue.get(timeout=timeout)
+            return self._event_queue.get_nowait()
+        except queue.Empty:
+            return None
+
+    def drain_events(self, max_events: Optional[int] = None) -> List[WiimoteHIDEvent]:
+        """Drain up to max_events from the queue (or all if None)."""
+        drained: List[WiimoteHIDEvent] = []
+        while True:
+            if max_events is not None and len(drained) >= max_events:
+                break
+            try:
+                drained.append(self._event_queue.get_nowait())
+            except queue.Empty:
+                break
+        return drained
+
+    def _read_loop(self):
+        """Background loop reading from HID and enqueuing raw events."""
+        self.logger.info("Starting HID read loop...")
+        try:
+            while not self._read_stop.is_set():
+                if not self.connected or not self.device:
+                    break
+
+                try:
+                    data = self.device.read(32, self._read_timeout_ms)
+                    if data:
+                        payload = bytes(data)
+                        event = WiimoteHIDEvent(timestamp=time.time(), data=payload)
+                        try:
+                            self._event_queue.put_nowait(event)
+                        except queue.Full:
+                            # Drop oldest to keep latest data flowing
+                            try:
+                                _ = self._event_queue.get_nowait()
+                                self._event_queue.put_nowait(event)
+                            except queue.Empty:
+                                pass
+                except Exception as e:
+                    # Treat read errors as disconnects, unless it's a benign timeout
+                    if "timeout" not in str(e).lower():
+                        self._last_read_error = e
+                        self.logger.warning(f"HID read error, stopping read loop: {e}")
+                        self._handle_disconnect(e)
+                        break
+        finally:
+            self.logger.info("HID read loop stopped")
+            if self._last_read_error:
+                self._handle_disconnect(self._last_read_error)
     
     def send_command(self, command: bytes):
         """
@@ -442,3 +592,59 @@ class WiimoteConnection:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit."""
         self.disconnect()
+
+    def _handle_disconnect(self, error: Optional[Exception] = None):
+        if not self.connected and self.device is None:
+            return
+
+        if error:
+            self.logger.warning(f"Wiimote disconnected: {error}")
+        else:
+            self.logger.warning("Wiimote disconnected")
+
+        self.stop_read_loop()
+        self._cleanup()
+        self.connected = False
+        self._ensure_reconnect()
+
+    def _ensure_reconnect(self):
+        if not self.auto_reconnect:
+            return
+        if self.connected:
+            return
+        with self._reconnect_lock:
+            if self._reconnect_thread and self._reconnect_thread.is_alive():
+                return
+            self._reconnect_stop.clear()
+            self._reconnect_thread = threading.Thread(
+                target=self._reconnect_loop,
+                name="WiimoteReconnect",
+                daemon=True,
+            )
+            self._reconnect_thread.start()
+
+    def _stop_reconnect_loop(self):
+        self._reconnect_stop.set()
+        if self._reconnect_thread and self._reconnect_thread.is_alive():
+            self._reconnect_thread.join(timeout=1.0)
+        self._reconnect_thread = None
+
+    def _reconnect_loop(self):
+        delay = max(0.1, self._reconnect_initial_delay)
+        while not self._reconnect_stop.is_set():
+            if self.connected:
+                return
+
+            self.logger.info(f"Reconnecting in {delay:.2f}s...")
+            time.sleep(delay)
+            if self._reconnect_stop.is_set():
+                return
+
+            if self.connect(timeout=5):
+                if self._read_loop_wanted:
+                    self.start_read_loop(timeout_ms=self._read_timeout_ms)
+                return
+
+            delay = min(self._reconnect_max_delay, delay * self._reconnect_backoff)
+            if self._reconnect_jitter > 0:
+                delay = max(0.1, delay + (self._reconnect_jitter * (0.5 - time.time() % 1)))

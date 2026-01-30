@@ -1,7 +1,7 @@
 """Wiimote HID protocol parsing."""
 
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from dataclasses import dataclass
 
 
@@ -35,6 +35,36 @@ class IRPoint:
     x: int
     y: int
     size: int = 0
+
+
+@dataclass
+class MotionPlusData:
+    """MotionPlus (gyro) data."""
+    yaw: int
+    pitch: int
+    roll: int
+    yaw_fast: bool
+    pitch_fast: bool
+    roll_fast: bool
+    extension_connected: bool
+
+
+@dataclass
+class NunchukButtons:
+    """Nunchuk button states."""
+    C: bool = False
+    Z: bool = False
+
+
+@dataclass
+class NunchukData:
+    """Nunchuk data (stick + accel + buttons)."""
+    stick_x: int
+    stick_y: int
+    accel_x: int
+    accel_y: int
+    accel_z: int
+    buttons: NunchukButtons
 
 
 class WiimoteProtocol:
@@ -95,12 +125,16 @@ class WiimoteProtocol:
         y = data[offset + 1]
         z = data[offset + 2]
         
-        # Expand to 10-bit by adding LSBs from button byte if available
-        # (For mode 0x33, LSBs are in button bits)
-        # For now, just shift left by 2 (approximate 10-bit)
-        x = (x << 2) | ((data[0] >> 5) & 0x03) if len(data) > 0 else (x << 2)
-        y = (y << 2) | ((data[1] >> 4) & 0x02) if len(data) > 1 else (y << 2)
-        z = (z << 2) | ((data[1] >> 5) & 0x02) if len(data) > 1 else (z << 2)
+        # Expand to 10-bit by adding LSBs from button bytes.
+        # Byte0 bits 5-6 hold X<1:0>. Byte1 bit5 holds Y<1>, bit6 holds Z<1>.
+        if len(data) > 1:
+            x = (x << 2) | ((data[0] >> 5) & 0x03)
+            y = (y << 1) | ((data[1] >> 5) & 0x01)
+            z = (z << 1) | ((data[1] >> 6) & 0x01)
+        else:
+            x = x << 2
+            y = y << 1
+            z = z << 1
         
         return AccelData(x=x, y=y, z=z)
     
@@ -148,14 +182,96 @@ class WiimoteProtocol:
                 ir_points.append(IRPoint(x=x, y=y, size=size))
         
         return ir_points
+
+    @staticmethod
+    def parse_motionplus(data: bytes, offset: int = 0) -> Optional[MotionPlusData]:
+        """
+        Parse MotionPlus (gyro) data.
+
+        Args:
+            data: Raw data bytes containing MotionPlus extension data
+            offset: Byte offset where MotionPlus data starts
+
+        Returns:
+            MotionPlusData or None
+        """
+        if len(data) < offset + 6:
+            return None
+
+        b0 = data[offset]
+        b1 = data[offset + 1]
+        b2 = data[offset + 2]
+        b3 = data[offset + 3]
+        b4 = data[offset + 4]
+        b5 = data[offset + 5]
+
+        yaw = b0 | ((b3 & 0xFC) << 6)
+        roll = b1 | ((b4 & 0xFC) << 6)
+        pitch = b2 | ((b5 & 0xFC) << 6)
+
+        yaw_fast = (b3 & 0x02) == 0
+        roll_fast = (b4 & 0x02) == 0
+        pitch_fast = (b5 & 0x02) == 0
+        extension_connected = (b5 & 0x01) == 0
+
+        return MotionPlusData(
+            yaw=yaw,
+            pitch=pitch,
+            roll=roll,
+            yaw_fast=yaw_fast,
+            pitch_fast=pitch_fast,
+            roll_fast=roll_fast,
+            extension_connected=extension_connected,
+        )
+
+    @staticmethod
+    def parse_nunchuk(data: bytes, offset: int = 0) -> Optional[NunchukData]:
+        """
+        Parse Nunchuk data.
+
+        Args:
+            data: Raw data bytes containing Nunchuk extension data
+            offset: Byte offset where Nunchuk data starts
+
+        Returns:
+            NunchukData or None
+        """
+        if len(data) < offset + 6:
+            return None
+
+        stick_x = data[offset]
+        stick_y = data[offset + 1]
+        ax_hi = data[offset + 2]
+        ay_hi = data[offset + 3]
+        az_hi = data[offset + 4]
+        btns = data[offset + 5]
+
+        accel_x = (ax_hi << 2) | ((btns >> 2) & 0x03)
+        accel_y = (ay_hi << 2) | ((btns >> 4) & 0x03)
+        accel_z = (az_hi << 2) | ((btns >> 6) & 0x03)
+
+        buttons = NunchukButtons(
+            C=(btns & 0x02) == 0,
+            Z=(btns & 0x01) == 0,
+        )
+
+        return NunchukData(
+            stick_x=stick_x,
+            stick_y=stick_y,
+            accel_x=accel_x,
+            accel_y=accel_y,
+            accel_z=accel_z,
+            buttons=buttons,
+        )
     
     @classmethod
-    def parse_report(cls, data: bytes) -> Dict:
+    def parse_report(cls, data: bytes, extension: Optional[str] = None) -> Dict:
         """
         Parse complete data report.
         
         Args:
             data: Raw report data from Wiimote
+            extension: Optional extension type to parse ("motionplus" or "nunchuk")
             
         Returns:
             Dictionary with parsed data
@@ -166,6 +282,9 @@ class WiimoteProtocol:
             'ir_points': [],
             'battery': None,
             'report_type': None,
+            'motionplus': None,
+            'nunchuk': None,
+            'events': [],
         }
         
         if not data or len(data) < 2:
@@ -186,10 +305,14 @@ class WiimoteProtocol:
             
             # All data reports start with buttons
             result['buttons'] = cls.parse_buttons(payload)
+            if result['buttons'] is not None:
+                result['events'].append({'type': 'buttons', 'data': result['buttons']})
             
-            # Mode 0x31, 0x33, 0x35, 0x37: Include accelerometer
-            if report_type in [0x31, 0x33, 0x35, 0x37]:
+            # Mode 0x31, 0x32, 0x33, 0x35, 0x36, 0x37: Include accelerometer
+            if report_type in [0x31, 0x32, 0x33, 0x35, 0x36, 0x37]:
                 result['accel'] = cls.parse_accelerometer(payload, offset=2)
+                if result['accel'] is not None:
+                    result['events'].append({'type': 'accel', 'data': result['accel']})
             
             # Mode 0x33, 0x36, 0x37: Include IR data
             if report_type == 0x33:
@@ -198,6 +321,27 @@ class WiimoteProtocol:
                 result['ir_points'] = cls.parse_ir(payload, offset=2)
             elif report_type == 0x37:
                 result['ir_points'] = cls.parse_ir(payload, offset=5)
+            if result['ir_points']:
+                result['events'].append({'type': 'ir', 'data': result['ir_points']})
+
+            # Extension data block (8 or 16 bytes depending on report type)
+            if report_type in [0x32, 0x35, 0x36, 0x37]:
+                # Calculate extension offset: buttons (2) + accel (3) = 5
+                # Exception: 0x37 has IR data before extension
+                if report_type == 0x37:
+                    extension_offset = 15  # buttons(2) + accel(3) + IR(10)
+                else:
+                    extension_offset = 5  # buttons(2) + accel(3)
+                
+                extension_data = payload[extension_offset:]
+                if extension == "motionplus":
+                    result['motionplus'] = cls.parse_motionplus(extension_data, offset=0)
+                    if result['motionplus'] is not None:
+                        result['events'].append({'type': 'motionplus', 'data': result['motionplus']})
+                elif extension == "nunchuk":
+                    result['nunchuk'] = cls.parse_nunchuk(extension_data, offset=0)
+                    if result['nunchuk'] is not None:
+                        result['events'].append({'type': 'nunchuk', 'data': result['nunchuk']})
         
         elif report_type == 0x20:
             # Status report (includes battery)

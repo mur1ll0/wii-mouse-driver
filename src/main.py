@@ -5,32 +5,17 @@ import argparse
 import logging
 import yaml
 import time
-from pathlib import Path
 
 from wiimote.connection import WiimoteConnection
 from wiimote.sensors import SensorProcessor
 from mouse.controller import MouseController
 from mouse.mapping import GestureMapper
+from logging_utils import configure_logging
 
 
 def setup_logging(debug=False):
     """Configure logging system."""
-    log_level = logging.DEBUG if debug else logging.INFO
-    log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    
-    # Create logs directory if it doesn't exist
-    log_dir = Path("logs")
-    log_dir.mkdir(exist_ok=True)
-    
-    # Configure logging
-    logging.basicConfig(
-        level=log_level,
-        format=log_format,
-        handlers=[
-            logging.FileHandler(log_dir / "wii_mouse.log"),
-            logging.StreamHandler(sys.stdout)
-        ]
-    )
+    configure_logging(debug=debug)
 
 
 def load_config(config_path="config.yaml"):

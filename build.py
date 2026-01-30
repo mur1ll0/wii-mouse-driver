@@ -8,6 +8,7 @@ import sys
 import shutil
 import subprocess
 from pathlib import Path
+from typing import List
 
 def clean_build():
     """Clean previous build artifacts."""
@@ -49,6 +50,23 @@ def check_pyinstaller():
 def build_executable():
     """Build the executable using PyInstaller."""
     print("\n📦 Gerando executável...")
+
+    extra_binaries: List[str] = []
+    try:
+        import hid  # type: ignore
+        import inspect
+
+        hid_path = Path(inspect.getfile(hid))
+        if hid_path.exists():
+            extra_binaries.append(f"{hid_path};.")
+
+        # Include any hidapi DLLs if present
+        site_packages = hid_path.parent
+        for pattern in ("hidapi.dll", "libhidapi-0.dll", "libhidapi.dll"):
+            for dll in site_packages.glob(pattern):
+                extra_binaries.append(f"{dll};.")
+    except Exception:
+        pass
     
     # PyInstaller command
     cmd = [
@@ -57,10 +75,11 @@ def build_executable():
         "--onefile",
         "--windowed",
         "--add-data", "config.ini;." if sys.platform == "win32" else "config.ini:.",
+        "--add-data", "src;src" if sys.platform == "win32" else "src:src",
         "--hidden-import=hid",
+        "--collect-binaries=hid",
         "--hidden-import=pyautogui",
         "--hidden-import=pynput",
-        "--hidden-import=PIL._tkinter_finder",
         "--collect-all=pyautogui",
         "--collect-all=pynput",
         "--collect-submodules=tkinter",
@@ -68,6 +87,10 @@ def build_executable():
         "--copy-metadata=pynput",
         "main.py"
     ]
+
+    for binary in extra_binaries:
+        cmd.insert(-1, "--add-binary")
+        cmd.insert(-1, binary)
     
     result = subprocess.run(cmd)
     
@@ -166,12 +189,6 @@ def main():
     print(f"📂 Executável gerado em: {os.path.abspath('dist')}")
     print(f"🎮 Arquivo: Wii Mouse Driver.exe")
     print()
-    
-    # Ask to open dist folder
-    if sys.platform == "win32":
-        response = input("Deseja abrir a pasta dist? (S/N): ")
-        if response.lower() in ['s', 'sim', 'y', 'yes']:
-            os.startfile(os.path.abspath('dist'))
 
 if __name__ == "__main__":
     try:

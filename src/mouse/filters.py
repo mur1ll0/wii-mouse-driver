@@ -2,7 +2,7 @@
 
 import logging
 from collections import deque
-from typing import Tuple
+from typing import Tuple, Optional
 
 
 class MovementFilter:
@@ -65,3 +65,55 @@ class MovementFilter:
             dy = 0
         
         return (dx, dy)
+
+
+class LowPassFilter:
+    """Simple low-pass (exponential moving average) filter."""
+
+    def __init__(self, alpha: float):
+        """
+        Initialize low-pass filter.
+
+        Args:
+            alpha: Smoothing factor in range [0, 1].
+        """
+        self.alpha = self._clamp_alpha(alpha)
+        self._has_value = False
+        self._value = 0.0
+
+    @staticmethod
+    def _clamp_alpha(alpha: float) -> float:
+        try:
+            alpha = float(alpha)
+        except (TypeError, ValueError):
+            return 0.0
+        return max(0.0, min(1.0, alpha))
+
+    def reset(self, value: Optional[float] = None):
+        """Reset filter state."""
+        self._has_value = value is not None
+        self._value = float(value) if value is not None else 0.0
+
+    def apply(self, value: float) -> float:
+        """
+        Apply filter to a new sample.
+
+        Args:
+            value: New sample value.
+
+        Returns:
+            Filtered value.
+        """
+        value = float(value)
+        if self.alpha <= 0.0:
+            self._has_value = True
+            self._value = value
+            return value
+
+        if not self._has_value:
+            self._has_value = True
+            self._value = value
+            return value
+
+        self._value = self.alpha * value + (1.0 - self.alpha) * self._value
+        return self._value

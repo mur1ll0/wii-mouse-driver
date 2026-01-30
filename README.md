@@ -4,8 +4,6 @@
 
 ---
 
-# STILL NOT WORKING!!! Run the test_wiimote.py file if you want to test the connection with the wiimote controller. The Entire system is under working, this project was started on 2026-01-26.
-
 ## English
 
 Control your PC mouse using a Wiimote via Bluetooth!
@@ -83,24 +81,37 @@ python -m src.ui.gui
 
 ### Control modes
 
-- **IR Mode**: Uses infrared sensor (point at screen)
-- **MotionPlus Mode**: Uses gyroscope (move the controller)
-- **Hybrid Mode**: Combines accelerometer and gyroscope
+The driver **automatically detects** available sensors and switches between modes:
+
+- **Accelerometer** (base mode, always available)
+- **Accelerometer + IR** (when sensor bar detected)
+- **Accelerometer + Gyroscope** (when MotionPlus available)
+- **Accelerometer + Gyroscope + IR** (all resources available)
+
+No manual mode selection needed - the system adapts automatically!
 
 ### ⚙️ Configuration
 
-Edit `config.ini` file to customize:
+Use the **Advanced Settings** screen in the GUI to customize:
+
+- Sensor sensitivities (accelerometer, gyroscope, IR)
+- Button mapping
+- Smoothing and filters
+- Auto-calibration settings
+- Combination weights when multiple sensors active
+
+You can also manually edit `config.ini` file:
 
 ```ini
 [General]
-mode = MotionPlus
+auto_mode_enabled = true
 auto_center = true
-debug = false
 
 [Sensitivity]
-gyro_x = 15.0
-gyro_y = 15.0
-smoothing = 0.3
+accel_sensitivity = 25
+gyro_sensitivity = 30
+ir_sensitivity = 40
+smoothing = 5
 
 [ButtonMapping]
 A = left_click
@@ -183,7 +194,8 @@ pip install hidapi --force-reinstall
 #### Mouse doesn't move
 - ✅ Click **"Start"** in the interface
 - ✅ Press **1** on Wiimote to activate control
-- ✅ Check if mode is correct (MotionPlus recommended)
+- ✅ Check detected sensors in status (at least accelerometer should be active)
+- ✅ Try calibrating the controller
 
 #### LEDs turn off quickly
 - This is normal. The Wiimote enters power-saving mode.
@@ -280,24 +292,37 @@ python -m src.ui.gui
 
 ### Modos de controle
 
-- **IR Mode**: Usa o sensor infravermelho (aponte para a tela)
-- **MotionPlus Mode**: Usa giroscópio (movimente o controle)
-- **Hybrid Mode**: Combina acelerômetro e giroscópio
+O driver **detecta automaticamente** os sensores disponíveis e alterna entre modos:
+
+- **Acelerômetro** (modo base, sempre disponível)
+- **Acelerômetro + IR** (quando sensor bar detectada)
+- **Acelerômetro + Giroscópio** (quando MotionPlus disponível)
+- **Acelerômetro + Giroscópio + IR** (todos os recursos disponíveis)
+
+Não é necessária seleção manual de modo - o sistema se adapta automaticamente!
 
 ### ⚙️ Configuração
 
-Edite o arquivo `config.ini` para personalizar:
+Use a tela de **Configurações Avançadas** na interface para personalizar:
+
+- Sensibilidades dos sensores (acelerômetro, giroscópio, IR)
+- Mapeamento de botões
+- Suavização e filtros
+- Configurações de auto-calibração
+- Pesos de combinação quando múltiplos sensores ativos
+
+Você também pode editar manualmente o arquivo `config.ini`:
 
 ```ini
 [General]
-mode = MotionPlus
+auto_mode_enabled = true
 auto_center = true
-debug = false
 
 [Sensitivity]
-gyro_x = 15.0
-gyro_y = 15.0
-smoothing = 0.3
+accel_sensitivity = 25
+gyro_sensitivity = 30
+ir_sensitivity = 40
+smoothing = 5
 
 [ButtonMapping]
 A = left_click
@@ -380,7 +405,8 @@ pip install hidapi --force-reinstall
 #### Mouse não se move
 - ✅ Clique em **"Iniciar"** na interface
 - ✅ Pressione **1** no Wiimote para ativar o controle
-- ✅ Verifique se o modo está correto (MotionPlus recomendado)
+- ✅ Verifique os sensores detectados no status (pelo menos acelerômetro deve estar ativo)
+- ✅ Tente calibrar o controle
 
 #### LEDs desligam rapidamente
 - Isso é normal. O Wiimote entra em modo de economia.
